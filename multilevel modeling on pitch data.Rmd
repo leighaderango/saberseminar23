@@ -1,0 +1,459 @@
+---
+title: "multilevel modeling on pitch data"
+author: "Leigha DeRango"
+date: "2023-05-22"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# figure out how to share data
+```
+
+#libraries
+```{r}
+library(dplyr)
+library(ggplot2)
+library(ggvis)
+library(gridExtra)
+library(leaps)
+library(lme4)
+library(purrr)
+```
+
+
+# join on ab_id
+```{r}
+
+joined = full_join(pitches, atbats, by = 'ab_id') %>%
+  select(g_id, ab_id, inning, top, pitcher_id, p_throws, batter_id, stand, outs, b_count, s_count, on_1b, on_2b, on_3b, p_score, b_score)
+
+```
+
+
+# remove missing
+```{r}
+
+# rows with any NAs
+missing = joined[!complete.cases(joined),]
+# - every row that has any NA is missing every game-state relevant column and there's no other trend in what seems to be causing the information to be gone so they'll all simply be removed
+
+joined = na.omit(joined)
+
+```
+
+
+# aggregate pitcher's pitch count
+```{r}
+
+joined = joined %>% group_by(pitcher_id, g_id) %>%
+  mutate(pitch_count = cumsum(outs <= 2)-1) %>%
+  relocate(pitch_count, .before = batter_id) 
+
+ab_pitches = joined %>% group_by(ab_id) %>%
+  mutate(end_pc = max(pitch_count) + 1, ab_pc = max(pitch_count) - min(pitch_count) + 1) %>%
+  relocate(ab_pc, .after = pitch_count) %>%
+  relocate(end_pc, .after = ab_pc)
+
+```
+
+
+# base and game states
+```{r}
+
+# return one row to reflect game at beginning of each at bat
+atbatstry = ab_pitches %>%
+  distinct(pitcher_id, batter_id, inning, outs, .keep_all = TRUE)
+
+# include base_state variable (runners on base)
+basestates = atbatstry %>% mutate(base_state = case_when(
+                                                       on_1b == 0 & on_2b == 0 & on_3b == 0 ~ '000',
+                                                       on_1b == 1 & on_2b == 0 & on_3b == 0 ~ '100', 
+                                                       on_1b == 0 & on_2b == 1 & on_3b == 0 ~ '020',
+                                                       on_1b == 0 & on_2b == 0 & on_3b == 1 ~ '003',
+                                                       on_1b == 1 & on_2b == 1 & on_3b == 0 ~ '120',
+                                                       on_1b == 0 & on_2b == 1 & on_3b == 1 ~ '023',
+                                                       on_1b == 1 & on_2b == 0 & on_3b == 1 ~ '103',
+                                                       on_1b == 1 & on_2b == 1 & on_3b == 1 ~ '123'))
+
+# include game_state variable (outs and runners on base)
+basestates$game_state = paste(basestates$outs, basestates$base_state, sep = '')
+
+# add expected runs
+expruns = basestates %>% mutate(exp_runs = case_when(
+                                                      game_state == '0000' ~ 0.53,
+                                                      game_state == '0100' ~ 0.94,
+                                                      game_state == '0020' ~ 1.17, 
+                                                      game_state == '0003' ~ 1.43,
+                                                      game_state == '0120' ~ 1.55,
+                                                      game_state == '0103' ~ 1.80,
+                                                      game_state == '0023' ~ 2.04,
+                                                      game_state == '0123' ~ 2.32,
+                                                      game_state == '1000' ~ 0.29,
+                                                      game_state == '1100' ~ 0.56,
+                                                      game_state == '1020' ~ 0.72, 
+                                                      game_state == '1003' ~ 1.00,
+                                                      game_state == '1120' ~ 1.00,
+                                                      game_state == '1103' ~ 1.23,
+                                                      game_state == '1023' ~ 1.42,
+                                                      game_state == '1123' ~ 1.63,
+                                                      game_state == '2000' ~ 0.11,
+                                                      game_state == '2100' ~ 0.24,
+                                                      game_state == '2020' ~ 0.33, 
+                                                      game_state == '2003' ~ 0.38,
+                                                      game_state == '2120' ~ 0.46,
+                                                      game_state == '2103' ~ 0.54,
+                                                      game_state == '2023' ~ 0.60,
+                                                      game_state == '2123' ~ 0.77
+                                                      ))
+
+```
+
+# change in expected runs
+```{r}
+
+exprunsdiff = expruns %>% group_by(g_id, inning, top) %>%
+  mutate(exp_runs_change = lead(exp_runs, default = NA) - exp_runs) %>% 
+  mutate(exp_runs_change = ifelse(is.na(exp_runs_change), exp_runs*-1, exp_runs_change))
+
+```
+
+# times faced each batter per game
+```{r}
+
+battersfaced = exprunsdiff %>% group_by(g_id, pitcher_id, batter_id) %>%
+  mutate(times_faced = cumsum(outs <= 2), .after = pitch_count)
+
+```
+
+# adjust classes
+```{r}
+
+battersfaced$g_id = as.factor(battersfaced$g_id)
+battersfaced$ab_id = as.factor(battersfaced$ab_id)
+battersfaced$inning = as.factor(battersfaced$inning)
+battersfaced$top = as.factor(battersfaced$top)
+battersfaced$pitcher_id = as.factor(battersfaced$pitcher_id)
+battersfaced$p_throws = as.factor(battersfaced$p_throws)
+battersfaced$batter_id = as.factor(battersfaced$batter_id)
+battersfaced$base_state = as.factor(battersfaced$base_state)
+battersfaced$game_state = as.factor(battersfaced$game_state)
+battersfaced$stand = as.factor(battersfaced$stand)
+
+```
+
+# reduce to only starting pitchers
+```{r}
+
+battersfaced$pitcher_game = paste(battersfaced$pitcher_id, battersfaced$g_id, sep = '') # add combined variable
+
+firstinnings = battersfaced %>% filter(inning == 1) # select only first innings
+firstvec = as.vector(firstinnings$pitcher_game) # make vector
+
+starters = battersfaced %>% filter(pitcher_game %in% firstvec) # filter to only starters
+
+```
+
+# separate relievers frame
+```{r}
+
+relievers = battersfaced %>% filter(!pitcher_game %in% firstvec) # filter to only relievers
+
+```
+
+
+# lag ab_pc
+```{r}
+
+lagged_ab = starters %>% group_by(g_id, inning, top) %>% mutate(prev_ab_pc = lag(ab_pc, n = 1, default = 0))
+
+lagged_ab_rel = relievers %>% group_by(g_id, inning, top) %>% mutate(prev_ab_pc = lag(ab_pc, n = 1, default = 0))
+
+```
+
+# base data
+```{r}
+
+saber1 = lagged_ab %>% select(g_id, ab_id, inning, top, pitcher_id, p_throws, batter_id, stand,
+                             times_faced, pitch_count, prev_ab_pc, p_score, b_score,
+                             game_state, exp_runs, exp_runs_change)
+
+saber2 = lagged_ab_rel %>% select(g_id, ab_id, inning, top, pitcher_id, p_throws, batter_id, stand,
+                             times_faced, pitch_count, prev_ab_pc, p_score, b_score,
+                             game_state, exp_runs, exp_runs_change)
+
+```
+
+
+
+# summary visualizations
+```{r}
+
+# distribution of game_state
+ggplot(saber1, aes(x = game_state)) + geom_histogram(stat = 'count') + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+
+# distribution of change in expected runs
+ggplot(battersfaced, aes(x = exp_runs_change)) + 
+  geom_histogram() + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + 
+  xlab('Change in Expected Runs') + 
+  ylab('Frequency')
+
+
+# right- vs. left-handed pitchers
+ggplot(battersfaced, aes(x = p_throws)) + geom_histogram(stat = 'count')
+
+
+# trend of changes in run expectancy as pitch count increases
+runchanges = battersfaced %>%
+  group_by(pitch_count) %>%
+  summarise(exp_runs_change = mean(exp_runs_change))
+
+ggplot(runchanges, aes(x = pitch_count, y = exp_runs_change)) + 
+  geom_line() + 
+  xlab('Pitch Count') + 
+  ylab('Average Change in Run Expectancy')
+
+
+# trend of changes in run expectancy as batters faced increases
+batchanges = battersfaced %>%
+  group_by(times_faced) %>%
+  summarise(exp_runs_change = mean(exp_runs_change))
+
+ggplot(batchanges, aes(x = times_faced, y = exp_runs_change)) + 
+  geom_line() + 
+  xlab('Times Faced') + 
+  ylab('Average Change in Expected Runs')
+
+```
+
+```{r}
+
+# comparison of two drastically different pitchers
+subset = saber1 %>% filter(pitcher_id %in% c(519141, 453286))
+ggplot(data = subset, aes(x = pitch_count, y=exp_runs_change, group=pitcher_id))+
+  geom_smooth(method = "lm", se = TRUE,aes(color=pitcher_id))+
+  xlab("Pitch Count")+ylab("Change in Run Expectancy")+
+  theme_bw() +
+  scale_color_hue(labels=c('Max Scherzer','Drew Pomeranz'))
+
+# 453286 - Max Scherzer
+# 519141 - Drew Pomeranz
+```
+
+# level 1 exploratory
+```{r}
+
+saber1$inning = as.numeric(saber1$inning)
+cor(saber1$pitch_count, saber1$inning) # 0.924
+  # making sure things make sense
+
+cor(saber1$times_faced, saber1$exp_runs_change) # -0.002
+
+cor(saber1$p_score, saber1$exp_runs_change) # 0.0116
+
+cor(saber1$b_score, saber1$exp_runs_change) # -0.0166
+
+cor(saber1$ab_pc, saber1$exp_runs_change) # 0.0557
+
+cor(saber1$pitch_count, saber1$exp_runs_change) # -0.0266
+
+cor(saber1$ab_pc, saber1$pitch_count) # -0.0375
+
+```
+
+
+# level 2 exploratory
+
+```{r}
+
+saberL = saber1 %>% filter(p_throws == 'L')
+ggplot(data = saberL, aes(pitch_count, exp_runs_change)) + geom_point()
+
+saberR = saber1 %>% filter(p_throws == 'R')
+ggplot(data = saberR, aes(pitch_count, exp_runs_change)) + geom_point()
+
+# side by side comparisons
+subset1 = saber1[saber1$pitcher_id %in% c("458681", "519242", "433587", "450308"),]
+ggplot(data= subset1, aes(x=pitch_count,y=exp_runs_change)) +
+  geom_point() +
+  stat_smooth(method="lm", fullrange=TRUE) +
+  xlab("Pitch Count") + ylab("Change in Expected Runs") + 
+  facet_wrap( ~ pitcher_id) +
+  theme(axis.title=element_text(size=16),
+        axis.text=element_text(size=14),
+        strip.text=element_text(size=14))
+```
+
+
+# linear models
+
+```{r}
+
+naive.1 = lm(exp_runs_change ~ pitch_count, data = saber1)
+
+summary(naive.1)
+
+ggplot(data=saber1, aes(pitch_count, exp_runs_change)) + 
+  geom_line() + 
+  geom_smooth(method=  'lm') + 
+  xlab('Pitch Count') + 
+  ylab('Change in Expected Runs')
+
+plot(naive.1)
+
+```
+
+```{r}
+
+naive.2 = lm(exp_runs_change ~ inning + top + p_throws + stand + times_faced + pitch_count + prev_ab_pc + p_score + b_score + p_score:b_score + game_state, data = saber1)
+summary(naive.2)
+
+
+naive.3 = lm(exp_runs_change ~ inning + top + p_throws + stand + times_faced + pitch_count + game_state, data = saber1)
+summary(naive.3)
+
+```
+
+```{r}
+# relievers
+
+naive.4 = lm(exp_runs_change ~ pitch_count, data = saber2)
+
+summary(naive.4)
+
+ggplot(data=saber2, aes(pitch_count, exp_runs_change)) + 
+  geom_line() + 
+  geom_smooth(method=  'lm') + 
+  xlab('Pitch Count') + 
+  ylab('Change in Expected Runs')
+
+plot(naive.4)
+
+```
+
+```{r}
+# relievers w covariates
+
+naive.5 = lm(exp_runs_change ~ inning + top + p_throws + stand + times_faced + pitch_count + prev_ab_pc + p_score + b_score + p_score:b_score + game_state, data = saber2)
+summary(naive.5)
+
+naive.6 = lm(exp_runs_change ~ inning + top + p_throws + stand + times_faced + pitch_count + game_state, data = saber2)
+summary(naive.6)
+
+```
+
+
+# entry-level mixed effect modeling
+
+```{r}
+# unconditional means models
+
+model.1 = lmer(exp_runs_change ~ 1 + (1|pitcher_id), data = saber1)
+summary(model.1)
+  # 1.119e-13 / (1.119e-13 + 1.248e-01) = 8.966346e-13
+  # a tiny amount of the variation in changes in expected runs is attributable to differences         between pitchers compared to changes over time within each pitcher
+
+  # average correlation between any pair of responses between pitchers is also tiny
+
+
+model.1.2 = lmer(exp_runs_change ~ 1 + (1|g_id) + (1|pitcher_id), data = saber1)
+summary(model.1.2)
+  # 1.520e-13 / (1.520e-13 + 1.248e-01) = 1.217949e-12
+  # still a very small amount of the variation is attributable to differences between pitchers        compared to the variation within pitchers and games, but higher than the 2 level model
+  
+```
+
+```{r}
+# unconditional growth models
+
+model.2 = lmer(exp_runs_change ~ pitch_count + (pitch_count | pitcher_id), data = saber1)
+summary(model.2)
+  # residual var = 1.247e-01
+  # residual var from uncond means = 1.248e-01
+      # pseudo-R^2 : (1.248e-01 - 1.247e-01)/1.248e-01 = 0.0008012821
+
+  # estimated within-pitcher variance dropped 0.08% when accounting for a linear increase in         pitch count
+    # in other words : 0.08% of variability can be explained by a linear increase over time           (represented by pitch_count)
+
+
+model.2.2 = lmer(exp_runs_change ~ pitch_count + (pitch_count | g_id) + (pitch_count | pitcher_id), data = saber1)
+
+
+summary(model.2.2)
+  # residual var = 1.246e-01
+  # residual var from uncond means = 1.248e-01
+    # pseudo-R^2 : (1.248e-01 - 1.246e-01)/1.248e-01 = 0.001602564
+
+  # estimated within-pitcher variance dropped 0.16% when accounting for a linear increase in          pitch count and correlation within games
+    # in other words: 0.16% of variability can be explained by a linear increase over time              (represented by pitch_count)
+
+
+```
+
+```{r}
+# unconditional quadratic growth model
+
+model.3 = lmer(exp_runs_change ~ pitch_count + I(pitch_count^2) + (1|pitcher_id), data = saber1)
+summary(model.3)
+
+  # t values are all larger than 1.96 and all variables are significant
+  
+  # residual var from uncond quad growth = 1.246e-01
+  # residual var from uncond means = 1.248e-01
+    # pseudo R^2: (1.248e-01 - 1.246e-01) / 1.248e-01 = 0.001602564
+
+  # estimated within-pitcher variance dropped 0.16% from the unconditional means model when           accounting for a quadratic increase in pitch count
+    # in other words: 0.16% of variability can be explained by a quadratic increase in pitch            count over time
+
+
+model.3.2 = lmer(exp_runs_change ~ pitch_count + I(pitch_count^2) + (pitch_count | g_id) + (pitch_count | pitcher_id), data = saber1)
+
+summary(model.3.2)
+  # residual var = 1.245e-01
+  # residual var from uncond means = 1.248e-01
+      # pseudo R^2: (1.248e-01 - 1.245e-01)/1.248e-01 = 0.002403846
+
+  # estimated within-pitcher variance dropped 0.24% from the unconditional means model when          accounting for a quadratic increase in pitch count
+    # in other words:  0.24% of variability can be explained by a quadratic increase in pitch           count over time
+```
+
+```{r}
+# continue on with only a 3-level model given that grouping by game has shown a positive impact on explaining variability
+library(nlme)
+
+model.4 = lme(fixed = exp_runs_change ~ pitch_count + I(pitch_count^2) + inning + top + game_state + inning, random = ~1 |pitcher_id/g_id,  data = saber1 )
+summary(model.4)
+
+
+model.5 = lme(fixed = exp_runs_change ~ pitch_count + I(pitch_count^2) + inning + top + game_state + p_score + b_score + prev_ab_pc, random = ~1 |pitcher_id/g_id,  data = saber1 )
+summary(model.5)
+
+```
+
+
+# comparing models
+```{r}
+AIC(model.1.2, model.2.2, model.3.2, model.4,  model.5)
+```
+
+# three level modeling for relievers
+```{r}
+library(nlme)
+
+model.4.r = lme(fixed = exp_runs_change ~ pitch_count + I(pitch_count^2) + inning + top + game_state + inning, random = ~1 |pitcher_id/g_id,  data = saber2)
+summary(model.4)
+
+model.5.r = lme(fixed = exp_runs_change ~ pitch_count + I(pitch_count^2) + inning + top + game_state + p_score + b_score + prev_ab_pc, random = ~1 |pitcher_id/g_id,  data = saber2)
+summary(model.5)
+
+```
+
+```{r}
+AIC(model.4.r, model.5.r)
+```
+
