@@ -1,5 +1,5 @@
 ---
-title: "data configuration"
+title: "multilevel modeling on pitch data"
 author: "Leigha DeRango"
 date: "2023-05-22"
 output: html_document
@@ -10,11 +10,7 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 ```{r}
-pitches = read.csv(file = "C:\\Users\\Leigh\\OneDrive\\Documents\\Saberseminar Pitches\\data\\pitches.csv")
-
-atbats = read.csv(file = "C:\\Users\\Leigh\\OneDrive\\Documents\\Saberseminar Pitches\\data\\atbats.csv")
-
-players = read.csv(file = "C:\\Users\\Leigh\\OneDrive\\Documents\\Saberseminar Pitches\\data\\player_names.csv")
+# data found on kaggle at: https://www.kaggle.com/datasets/pschale/mlb-pitch-data-20152018?select=pitches.csv
 ```
 
 #libraries
