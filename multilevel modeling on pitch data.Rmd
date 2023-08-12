@@ -413,7 +413,6 @@ summary(model.3.2)
 ```
 
 ```{r}
-saber1$inning = as.integer(saber1$inning)
 
 model.4 = lmer(exp_runs_change ~ pitch_count + I(pitch_count^2) + inning + top + game_state + (1|pitcher_id), data = saber1)
   # only game info without scores
@@ -434,8 +433,6 @@ model.7= lmer(exp_runs_change ~ pitch_count + I(pitch_count^2) + inning + game_s
   # nested g_id inside of p_id
 summary(model.7)
 
-
-### FINAL MODEL
 model.8 = lmer(exp_runs_change ~ pitch_count + I(pitch_count^2) + inning + game_state + top + times_faced + stand:p_throws + (1|pitcher_id), data = saber1)
   # removed insignificant variables scores and prev_ab_pc and disregarded nested games
 summary(model.8)
@@ -447,26 +444,100 @@ summary(model.9)
 
 ```
 
-
-# comparing starter models
+### with smaller number of pitchers
 ```{r}
-AIC(model.1.2, model.2.2, model.3.2, model.4,  model.5, model.6, model.7, model.8, model.9)
+library(tidyverse)
+freqvec = table(saber1$pitcher_id)
+idvec <- names(freqvec[freqvec >= 2750])
+sabersmall <- saber1 %>% filter(pitcher_id %in% idvec)
+sabersmall$pitcher_id = as.character(as.factor(sabersmall$pitcher_id))
+
+
+# unconditional means
+model.1.s = lmer(exp_runs_change ~ 1 + (1|pitcher_id), data = sabersmall)
+summary(model.1.s)
+  # singular
+  # 0/0.1225 = 0 variance explained
+
+# unconditional means 3 level
+model.1.2.s = lmer(exp_runs_change ~ 1 + (1|g_id) + (1|pitcher_id), data = sabersmall)
+summary(model.1.2.s)
+  # singular
+  # 0 + 0 / 0.1225 = 0 variance explained
+
+# unconditional growth
+model.2.s = lmer(exp_runs_change ~ pitch_count + (pitch_count | pitcher_id), data = sabersmall)
+summary(model.2.s)
+  # singular
+  # residual var =  1.224e-01
+  # residual var from uncond. means 2 level = 0.1225
+      # increase in explained variance: (0.1225 - 0.1224) / 0.1225 = 0.0008163265, 0.08%
+
+# unconditional growth 3 level
+model.2.2.s = lmer(exp_runs_change ~ pitch_count + (pitch_count | g_id) + (pitch_count | pitcher_id), data = saber1)
+summary(model.2.2.s)
+  # singular
+  # residual var =  1.246e-01
+  # residual var from uncond. means 3 level = 0.1225
+      # increase in explained variance: (0.1225 - 0.1246) / 0.1225 = -0.017, decreased explained variance
+
+# unconditional quadratic growth
+model.3.s = lmer(exp_runs_change ~ pitch_count + I(pitch_count^2) + (1|pitcher_id), data = sabersmall)
+summary(model.3.s)
+  #singular
+  # residual var =  0.1222 
+  # residual var from uncond. means 2 level = 0.1225
+    # increase in explained variance: (0.1225 - 0.1222)  / 0.1225 = 0.002449, 0.2% increase
+
+# unconditional quadratic growth 3 level
+model.3.2.s = lmer(exp_runs_change ~ pitch_count + I(pitch_count^2) + (pitch_count | g_id) + (pitch_count | pitcher_id), data = sabersmall)
+summary(model.3.2.s)
+  # singular
+  # residual var = 0.1221
+  # residual var from uncond. means = 0.1225
+    # increase in explained variance: (0.1225 - 0.1221) / 0.1225 = 0.00327, 0.3% increase
 ```
 
-# final starter model plot
 ```{r}
-hundred = data.frame(pitches = 1:500)
+# advanced modeling
 
-ggplot(hundred,aes(pitches)) +
- stat_function(fun=function(x) (-0.03987 + 0.000001498*(x^2)))
-
-# intercept: -3.987e-02
-# pitch_count: - 4.526e-04
-# pitch_count*2 estimate: 1.498e-06
+model.4.s = lmer(exp_runs_change ~ pitch_count + I(pitch_count^2) + inning + top + game_state + (1|pitcher_id), data = sabersmall)
+  # only game info without scores
+summary(model.4.s)
 
 
-ggplot(hundred,aes(pitches)) +
- stat_function(fun=function(x) (-0.03987 - 0.0004526*x + 0.000001498*(x^2)))
+model.5.s = lmer(exp_runs_change ~ pitch_count + I(pitch_count^2) + inning + top + game_state + p_score + b_score + prev_ab_pc + (1|pitcher_id/g_id), data = sabersmall)
+  # added game info (scores and prev_ab_pc)
+summary(model.5.s)
+
+
+model.6.s = lmer(exp_runs_change ~ pitch_count + I(pitch_count^2) + inning + game_state + top + times_faced + stand:p_throws + p_score + b_score + prev_ab_pc + (1|pitcher_id), data = sabersmall)
+  # added interaction term for stand:p_throws (platoon advantage)
+summary(model.6.s)
+
+
+model.7.s = lmer(exp_runs_change ~ pitch_count + I(pitch_count^2) + inning + game_state + top + times_faced + stand:p_throws + p_score + b_score + prev_ab_pc + (1|pitcher_id/g_id), data = sabersmall)
+  # nested g_id inside of p_id
+summary(model.7.s)
+
+
+model.8.s = lmer(exp_runs_change ~ pitch_count + I(pitch_count^2) + inning + game_state + top + times_faced + prev_ab_pc + stand:p_throws + (1|pitcher_id), data = sabersmall)
+  #disregarded nested games and scores
+summary(model.8.s)
+
+### FINAL MODEL
+model.9.s = lmer(exp_runs_change ~ pitch_count + I(pitch_count^2) + inning + game_state + top + times_faced + stand:p_throws + (1|pitcher_id), data = sabersmall)
+  # disregarded prev_ab_pc
+summary(model.9.s)
+
+model.10.s = lmer(exp_runs_change ~ pitch_count + I(pitch_count^2) + inning + game_state + top + times_faced + stand:p_throws + (pitch_count|pitcher_id), data = sabersmall)
+  # random slope and intercept
+summary(model.10.s)
+```
+
+# comparing reduced starter models
+```{r}
+AIC(model.1.2.s, model.2.2.s, model.3.2.s, model.4.s,  model.5.s, model.6.s, model.7.s, model.8.s,  model.9.s, model.10.s)
 ```
 
 
@@ -505,20 +576,6 @@ summary(model.8.r)
 AIC(model.4.r, model.5.r, model.6.r, model.7.r, model.8.r, model.9.r)
 ```
 
-# reliever model
-```{r}
-fifty = data.frame(pitches = 1:50)
-
-# intercept = -3.684e-02
-# linear estimate = 5.775e-05
-# quadratic estimate = -3.754e-06
-
-
-ggplot(hundred,aes(pitches)) +
- stat_function(fun=function(x) (-0.03684 + 0.00005775*x - 0.000003754*(x^2)))
-```
-
-
 # model use
 ```{r}
 
@@ -550,7 +607,6 @@ predict(model.8, newdata = starter_pred)
 reliever_pred = data.frame(inning, top, game_state, stand, r_throws, reliever_id, p_score, b_score, reliever_count) %>% rename(p_throws = r_throws, pitcher_id = reliever_id, pitch_count = reliever_count)
 print('reliever: andrew miller')
 predict(model.8.r, newdata = reliever_pred)
-
 
 ```
 
